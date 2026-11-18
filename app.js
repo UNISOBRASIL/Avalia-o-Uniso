@@ -653,77 +653,66 @@ function boot() {
       const p = document.createElement('p');
       p.textContent = 'Nenhuma avaliação encontrada.';
       target.append(p);
+      return;
     }
 
+    const STAGES = {
+      AGUARDANDO_COLABORADOR: 'Aguardando colaborador',
+      AGUARDANDO_GESTOR: 'Aguardando gestor',
+      AGUARDANDO_RH: 'Aguardando RH',
+      AGUARDANDO_DIRETORIA: 'Aguardando diretoria',
+      CONCLUIDA: 'Concluída'
+    };
+    const cell = (tag, text, className) => {
+      const el = document.createElement(tag);
+      if (text != null) el.textContent = text;
+      if (className) el.className = className;
+      return el;
+    };
+    const shortDate = value => value?.toDate?.()?.toLocaleDateString('pt-BR') || '—';
+    const hasScore = item => item.type === 'DESEMPENHO' || (item.scores && Object.keys(item.scores).length === 10);
+
+    const table = cell('table', null, 'history-table');
+    const head = document.createElement('tr');
+    ['Colaborador', 'Setor', 'Tipo', 'Nota', 'Data', 'Avaliador', 'Etapa', '']
+      .forEach(text => head.append(cell('th', text)));
+    table.append(cell('thead'), cell('tbody'));
+    table.tHead.append(head);
+    const body = table.tBodies[0];
+
     for (const item of found) {
-      const box = document.createElement('article');
-      box.className = 'item';
+      const row = document.createElement('tr');
+      const stage = cell('span', isMarketing() ? 'Registrada' : (STAGES[item.status] || item.status),
+        'badge ' + (item.status === 'CONCLUIDA' || isMarketing() ? 'done' : 'pending'));
+      const stageCell = cell('td');
+      stageCell.append(stage);
 
-      const name = document.createElement('strong');
-      name.textContent = item.employee;
-
-      const info = document.createElement('small');
-      info.textContent =
-        `${item.department} • ${TYPES[item.type] || item.type} • ${item.type === 'DESEMPENHO' || item.scores && Object.keys(item.scores).length === 10 ? `${item.total}/100 • ` : ''}${dateTime(item.createdAt)} • Gestor: ${item.evaluator}`;
-
-      const status = document.createElement('p');
-
-      const rh = document.createElement('span');
-      rh.className = 'badge ' + (item.rhAt ? 'done' : 'pending');
-      rh.textContent = item.rhAt
-        ? 'RH: concluído'
-        : ['AGUARDANDO_COLABORADOR', 'AGUARDANDO_GESTOR'].includes(item.status)
-          ? 'RH: próxima etapa' : 'Aguardando análise do RH';
-
-      const director = document.createElement('span');
-      director.className = 'badge ' + (
-        item.directorAt
-          ? 'done'
-          : ['AGUARDANDO_RH', 'AGUARDANDO_GESTOR', 'AGUARDANDO_COLABORADOR'].includes(item.status)
-            ? 'upcoming'
-            : 'pending'
+      row.append(
+        cell('td', item.employee, 'name'),
+        cell('td', item.department || '—'),
+        cell('td', TYPES[item.type] || item.type),
+        cell('td', hasScore(item) && item.total != null ? String(item.total) : '—', 'num'),
+        cell('td', shortDate(item.createdAt)),
+        cell('td', item.evaluator || '—'),
+        stageCell
       );
 
-      director.textContent = item.directorAt
-        ? 'Diretoria: concluída'
-        : ['AGUARDANDO_RH', 'AGUARDANDO_GESTOR', 'AGUARDANDO_COLABORADOR'].includes(item.status)
-          ? 'Diretoria: próxima etapa'
-          : 'Aguardando análise da diretoria';
-
-      if (item.status === 'AGUARDANDO_COLABORADOR') {
-        const employee = document.createElement('span');
-        employee.className = 'badge pending';
-        employee.textContent = 'Aguardando resposta do colaborador';
-        status.append(employee, document.createTextNode(' '));
-      }
-      if (item.status === 'AGUARDANDO_GESTOR') {
-        const manager = document.createElement('span');
-        manager.className = 'badge pending';
-        manager.textContent = 'Aguardando considerações do gestor';
-        status.append(manager, document.createTextNode(' '));
-      }
-      if (isMarketing()) status.textContent = 'Registro do gestor';
-      else status.append(rh, document.createTextNode(' '), director);
-
-      const view = document.createElement('button');
+      const actions = cell('td', null, 'actions');
+      const view = cell('button', 'Ver', 'link');
       view.type = 'button';
-      view.textContent = 'Visualizar / imprimir';
-
+      view.title = 'Visualizar / imprimir';
       view.onclick = () => {
         const preview = window.open('', '_blank');
-
         if (!preview) {
-          $('historyStatus').textContent =
-            'Permita pop-ups para abrir o relatório.';
+          $('historyStatus').textContent = 'Permita pop-ups para abrir o relatório.';
           return;
         }
-
         try {
           showReport(
             preview,
             itemValues(item),
             item.scores,
-            item.type === 'DESEMPENHO' || Object.keys(item.scores || {}).length === 10
+            hasScore(item)
               ? calculateRecord(item.scores, item.scoringVersion, item.rhScores, item.scoringWeights) : null,
             item.evaluator,
             item
@@ -733,14 +722,39 @@ function boot() {
           $('historyStatus').textContent = err.message;
         }
       };
+      actions.append(view);
 
-      box.append(name, info, status, view);
+      // Etapa que este usuário precisa concluir: abre o formulário numa linha abaixo.
+      let form = null;
+      let formLabel = '';
+      if (['admin', 'gestor', 'rh', 'lider'].includes(profile.role) &&
+          item.evaluatorUid === auth.currentUser.uid && item.status === 'AGUARDANDO_GESTOR') {
+        form = managerReviewForm(item); formLabel = 'Registrar considerações';
+      } else if (['rh', 'admin'].includes(profile.role) && item.status === 'AGUARDANDO_RH') {
+        form = reviewForm(item, 'rh'); formLabel = 'Analisar (RH)';
+      } else if (['diretoria', 'admin'].includes(profile.role) && item.status === 'AGUARDANDO_DIRETORIA') {
+        form = reviewForm(item, 'director'); formLabel = 'Analisar (Diretoria)';
+      }
+
+      let formRow = null;
+      if (form) {
+        formRow = document.createElement('tr');
+        formRow.className = 'form-row';
+        formRow.hidden = true;
+        const formCell = cell('td');
+        formCell.colSpan = 8;
+        formCell.append(form);
+        formRow.append(formCell);
+        const open = cell('button', formLabel, 'link strong');
+        open.type = 'button';
+        open.onclick = () => { formRow.hidden = !formRow.hidden; };
+        actions.append(open);
+      }
 
       if (item.status === 'AGUARDANDO_COLABORADOR' &&
           item.evaluatorUid === auth.currentUser.uid && item.employeeEmail) {
-        const resend = document.createElement('button');
+        const resend = cell('button', 'Reenviar link', 'link');
         resend.type = 'button';
-        resend.textContent = 'Reenviar link ao colaborador';
         resend.onclick = async () => {
           resend.disabled = true;
           try {
@@ -752,42 +766,29 @@ function boot() {
             $('historyStatus').textContent = `Falha no envio do link: ${err.message}`;
           } finally { resend.disabled = false; }
         };
-        box.append(resend);
+        actions.append(resend);
       }
 
-      if (
-        ['admin', 'gestor', 'rh', 'lider'].includes(profile.role) &&
-        item.evaluatorUid === auth.currentUser.uid &&
-        item.status === 'AGUARDANDO_GESTOR'
-      ) {
-        box.append(managerReviewForm(item));
-      }
+      if (isAdmin()) actions.append(deleteButton(item));
 
-      if (
-        (profile.role === 'rh' || profile.role === 'admin') &&
-        item.status === 'AGUARDANDO_RH'
-      ) {
-        box.append(reviewForm(item, 'rh'));
-      }
-
-      if (
-        (profile.role === 'diretoria' || profile.role === 'admin') &&
-        item.status === 'AGUARDANDO_DIRETORIA'
-      ) {
-        box.append(reviewForm(item, 'director'));
-      }
-
-      if (isAdmin()) box.append(deleteButton(item));
-
-      target.append(box);
+      row.append(actions);
+      body.append(row);
+      if (formRow) body.append(formRow);
     }
+
+    const wrap = cell('div', null, 'table-wrap');
+    wrap.append(table);
+    target.append(wrap);
   }
+
 
   function deleteButton(item) {
     const button = document.createElement('button');
     button.type = 'button';
-    button.className = 'danger';
-    button.textContent = 'Excluir avaliação';
+    button.className = 'link icon-danger';
+    button.textContent = '🗑';
+    button.title = 'Excluir avaliação';
+    button.setAttribute('aria-label', 'Excluir avaliação');
     button.onclick = async () => {
       if (!window.confirm(`Excluir definitivamente a avaliação de ${item.employee}? Esta ação não pode ser desfeita.`)) return;
       button.disabled = true;
