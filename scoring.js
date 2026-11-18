@@ -26,7 +26,7 @@ const MARKETING_WEIGHT_SUM = CRITERIA.reduce((sum, [key]) => sum + MARKETING_WEI
 const MARKETING_POLICY_VERSION = 'uniso-marketing-2026-10-v1';
 
 const RH_CRITERIA = ['assiduidade', 'pontualidade'];
-const RH_REVIEW_ROLES = ['admin', 'gestor', 'marketing'];
+const RH_REVIEW_ROLES = ['admin', 'gestor', 'marketing', 'lider'];
 function requiresRhScores(record) {
   return record?.type === 'DESEMPENHO' && Boolean(record.scoringVersion) &&
     RH_REVIEW_ROLES.includes(record.evaluatorRole) &&

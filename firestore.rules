@@ -1,33 +1,53 @@
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
-    function profile() {
-      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
-    }
-    function active() {
-      return request.auth != null &&
-        exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
-        profile().active == true;
-    }
-    function elevated() { return profile().role in ['admin', 'rh', 'diretoria']; }
+    function signedIn() { return request.auth != null; }
+    function userPath() { return /databases/$(database)/documents/users/$(request.auth.uid); }
+    function profile() { return get(userPath()).data; }
+    function active() { return signedIn() && exists(userPath()) && profile().active == true; }
+    function hasRole(roles) { return active() && profile().role in roles; }
+    function isAdmin() { return hasRole(['admin']); }
+    function elevated() { return hasRole(['admin', 'rh', 'diretoria']); }
+    function seesHistory() { return profile().get('canViewHistory', false) == true; }
+    function pendingStatuses() { return ['AGUARDANDO_COLABORADOR', 'AGUARDANDO_GESTOR']; }
+
     function employeeFor(record) {
-      return request.auth != null && record.keys().hasAll(['employeeEmail', 'type']) &&
+      return signedIn() && record.keys().hasAll(['employeeEmail', 'type']) &&
         request.auth.token.email_verified == true &&
         request.auth.token.email == record.employeeEmail &&
         record.type in ['EXPERIENCIA', 'PROMOCAO', 'PERIODICA'];
     }
-    match /users/{uid} {
-      allow get: if request.auth != null && request.auth.uid == uid;
-      allow list, write: if false;
+
+    // Quem pode ler uma avaliação:
+    // admin, RH e diretoria: todas; gestor: as que criou;
+    // líder de setor: as próprias pendências e, se o admin liberar, o histórico do seu setor.
+    function canRead(record) {
+      return elevated() ||
+        (hasRole(['gestor']) && record.evaluatorUid == request.auth.uid) ||
+        (hasRole(['lider']) && (
+          (record.evaluatorUid == request.auth.uid && record.status in pendingStatuses()) ||
+          (seesHistory() && record.get('department', '') == profile().department)));
     }
+
+    match /users/{uid} {
+      allow get: if (signedIn() && request.auth.uid == uid) || isAdmin();
+      allow list: if isAdmin();
+      // Pela tela, o admin só liga/desliga o acesso e a liberação do histórico.
+      allow update: if isAdmin() &&
+        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['active', 'canViewHistory']);
+      allow create, delete: if false;
+    }
+
     match /assessments/{id} {
-      allow get: if employeeFor(resource.data) || (active() &&
-        (elevated() || (profile().role == 'gestor' && resource.data.evaluatorUid == request.auth.uid)));
-      allow list: if active() &&
-        (elevated() || (profile().role == 'gestor' && resource.data.evaluatorUid == request.auth.uid));
-      allow create: if active() && profile().role in ['admin', 'gestor'] &&
+      allow get: if employeeFor(resource.data) || canRead(resource.data);
+      allow list: if canRead(resource.data);
+
+      allow create: if hasRole(['admin', 'gestor', 'rh', 'lider', 'marketing']) &&
         request.resource.data.evaluatorUid == request.auth.uid &&
         request.resource.data.rhNote == '' && request.resource.data.directorNote == '' &&
+        (profile().role != 'lider' || request.resource.data.department == profile().department) &&
+        (profile().role != 'marketing' ||
+          (request.resource.data.department == 'Marketing' && request.resource.data.type == 'DESEMPENHO')) &&
         request.resource.data.type in ['DESEMPENHO', 'EXPERIENCIA', 'PROMOCAO', 'PERIODICA'] &&
         ((request.resource.data.type in ['EXPERIENCIA', 'PROMOCAO', 'PERIODICA'] &&
           request.resource.data.status == 'AGUARDANDO_COLABORADOR' &&
@@ -35,7 +55,9 @@ service cloud.firestore {
           request.resource.data.employeeEmail.size() > 3) ||
          (request.resource.data.type == 'DESEMPENHO' &&
           request.resource.data.status == 'AGUARDANDO_RH'));
+
       allow update: if (
+        // Colaborador responde o questionário pelo link.
         employeeFor(resource.data) && resource.data.status == 'AGUARDANDO_COLABORADOR' &&
         request.resource.data.status == 'AGUARDANDO_GESTOR' &&
         request.resource.data.employeeUid == request.auth.uid &&
@@ -44,7 +66,8 @@ service cloud.firestore {
         request.resource.data.diff(resource.data).affectedKeys().hasOnly([
           'questionnaireAnswers', 'employeeUid', 'employeeSubmittedAt', 'status', 'updatedAt'])
       ) || (
-        active() && profile().role in ['admin', 'gestor'] &&
+        // Quem criou registra as considerações e encaminha ao RH.
+        hasRole(['admin', 'gestor', 'rh', 'lider']) &&
         resource.data.type in ['EXPERIENCIA', 'PROMOCAO', 'PERIODICA'] &&
         resource.data.evaluatorUid == request.auth.uid &&
         resource.data.status == 'AGUARDANDO_GESTOR' &&
@@ -64,15 +87,16 @@ service cloud.firestore {
         request.resource.data.diff(resource.data).affectedKeys().hasOnly([
           'notes', 'plan', 'managerUid', 'managerName', 'managerAt', 'status', 'updatedAt'])
       ) || (
-        active() && profile().role in ['admin', 'rh'] &&
+        // RH: observação (e notas de assiduidade/pontualidade); não altera as notas do avaliador.
+        hasRole(['admin', 'rh']) &&
         resource.data.status == 'AGUARDANDO_RH' &&
         request.resource.data.status == 'AGUARDANDO_DIRETORIA' &&
         request.resource.data.rhUid == request.auth.uid &&
         request.resource.data.rhNote is string && request.resource.data.rhNote.size() > 0 &&
         request.resource.data.diff(resource.data).affectedKeys().hasOnly([
-          'status', 'rhNote', 'rhUid', 'rhName', 'rhAt', 'updatedAt'])
+          'status', 'rhNote', 'rhUid', 'rhName', 'rhAt', 'rhScores', 'total', 'rawTotal', 'updatedAt'])
       ) || (
-        active() && profile().role in ['admin', 'diretoria'] &&
+        hasRole(['admin', 'diretoria']) &&
         resource.data.status == 'AGUARDANDO_DIRETORIA' &&
         request.resource.data.status == 'CONCLUIDA' &&
         request.resource.data.directorUid == request.auth.uid &&
@@ -80,8 +104,21 @@ service cloud.firestore {
         request.resource.data.diff(resource.data).affectedKeys().hasOnly([
           'status', 'directorNote', 'directorUid', 'directorName', 'directorAt', 'updatedAt'])
       );
-      allow delete: if false;
+
+      allow delete: if isAdmin();
     }
+
+    // Cópia do registro do líder de Marketing (pesos próprios).
+    match /marketingAssessments/{id} {
+      allow read: if isAdmin() ||
+        (hasRole(['marketing']) && seesHistory() && resource.data.evaluatorUid == request.auth.uid);
+      allow create: if hasRole(['marketing']) &&
+        request.resource.data.evaluatorUid == request.auth.uid &&
+        request.resource.data.department == 'Marketing';
+      allow update: if false;
+      allow delete: if isAdmin();
+    }
+
     match /{document=**} { allow read, write: if false; }
   }
 }

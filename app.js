@@ -1,12 +1,15 @@
 import { initializeApp } from 'https://www.gstatic.com/firebasejs/11.10.0/firebase-app.js';
 import { getAuth, onAuthStateChanged, signInWithEmailAndPassword, signOut, sendSignInLinkToEmail, sendPasswordResetEmail } from 'https://www.gstatic.com/firebasejs/11.10.0/firebase-auth.js';
-import { getFirestore, doc, getDoc, onSnapshot, collection, query, where, addDoc, updateDoc, writeBatch, serverTimestamp } from 'https://www.gstatic.com/firebasejs/11.10.0/firebase-firestore.js';
+import { getFirestore, doc, getDoc, getDocs, onSnapshot, collection, query, where, addDoc, updateDoc, writeBatch, serverTimestamp } from 'https://www.gstatic.com/firebasejs/11.10.0/firebase-firestore.js';
 import { firebaseConfig } from './config.js';
 const { CRITERIA, WEIGHTS, POLICY_VERSION, MARKETING_WEIGHTS, MARKETING_POLICY_VERSION,
   RH_CRITERIA, requiresRhScores, calculate, calculateMarketing, calculateRecord,
   weightsForVersion } = globalThis.UNISO_SCORING;
 const { QUESTIONNAIRES, QUESTIONNAIRE_VERSION } = globalThis.UNISO_QUESTIONNAIRES;
 const TYPES = { DESEMPENHO: 'Avaliação e Desempenho', EXPERIENCIA: 'Experiência', PROMOCAO: 'Promoção', PERIODICA: 'Avaliação periódica' };
+const SECTORS = ['Administrativo', 'Comercial', 'Estoque', 'Faturamento', 'Financeiro', 'Lojas', 'Marketing', 'RH', 'Vendas'];
+const PENDING_STATUSES = ['AGUARDANDO_COLABORADOR', 'AGUARDANDO_GESTOR'];
+const ROLE_LABELS = { admin: 'Administrador', gestor: 'Gestor', rh: 'RH', diretoria: 'Diretoria', marketing: 'Líder Marketing', lider: 'Líder de setor' };
 const questionKey = index => `q${String(index + 1).padStart(2, '0')}`;
 const $ = id => document.getElementById(id);
 
@@ -26,6 +29,12 @@ function boot() {
   let historyUnsubscribe = null;
   let statusFilter = 'ALL';
   const isMarketing = () => profile?.role === 'marketing';
+  const isAdmin = () => profile?.role === 'admin';
+  // Líderes (setor e Marketing) avaliam só o próprio setor; o histórico depende de liberação do admin.
+  const isLeader = () => ['lider', 'marketing'].includes(profile?.role);
+  const canCreate = () => ['admin', 'gestor', 'rh', 'lider', 'marketing'].includes(profile?.role);
+  const canSeeHistory = () => !isLeader() || profile?.canViewHistory === true;
+  const leaderDepartment = () => isMarketing() ? 'Marketing' : (profile?.department || '');
   const accountName = () =>
     (typeof profile?.name === 'string' && profile.name.trim()) ||
     auth.currentUser?.email?.trim() ||
@@ -50,6 +59,17 @@ function boot() {
 
   const dateTime = value =>
     value?.toDate?.()?.toLocaleString('pt-BR') || '—';
+
+  $('department').replaceChildren(
+    new Option('Selecione o setor', ''),
+    ...SECTORS.map(sector => new Option(sector, sector))
+  );
+
+  function applyDepartmentLock() {
+    const select = $('department');
+    select.disabled = isLeader();
+    if (isLeader()) select.value = leaderDepartment();
+  }
 
   $('criteria').replaceChildren(...CRITERIA.map(([key, label]) => {
     const row = document.createElement('div');
@@ -130,13 +150,16 @@ function boot() {
 
       if (
         !profile?.active ||
-        !['admin', 'gestor', 'rh', 'diretoria', 'marketing'].includes(profile.role)
+        !['admin', 'gestor', 'rh', 'diretoria', 'marketing', 'lider'].includes(profile.role)
       ) {
         throw Error('Perfil sem autorização para acessar avaliações.');
       }
+      if (profile.role === 'lider' && !SECTORS.includes(profile.department)) {
+        throw Error('Perfil de líder sem setor válido. Peça ao administrador para preencher o campo department.');
+      }
 
       $('app').hidden = false;
-      $('identity').textContent = `${accountName()} • ${profile.role}`;
+      $('identity').textContent = `${accountName()} • ${ROLE_LABELS[profile.role] || profile.role}${profile.role === 'lider' ? ` (${profile.department})` : ''}`;
       $('assessmentType').value = isMarketing() ? 'DESEMPENHO' : $('assessmentType').value;
       $('assessmentType').disabled = isMarketing();
       $('weightHint').textContent = isMarketing()
@@ -150,9 +173,14 @@ function boot() {
       $('evaluatorName').textContent = accountName();
       $('assessmentForm').hidden = false;
 
-      $('tabNew').hidden = !['admin', 'gestor', 'marketing'].includes(profile.role);
+      applyDepartmentLock();
+      $('tabNew').hidden = !canCreate();
+      // Líder sem liberação: Marketing não tem etapas pendentes; os demais veem só as próprias pendências.
+      $('tabHistory').hidden = isMarketing() && !canSeeHistory();
+      $('tabHistory').textContent = canSeeHistory() ? 'Histórico' : 'Minhas pendências';
+      $('tabUsers').hidden = !isAdmin();
 
-      if (['admin', 'gestor', 'marketing'].includes(profile.role)) {
+      if (canCreate()) {
         selectPage('new');
       } else {
         selectPage('history');
@@ -207,8 +235,68 @@ function boot() {
   function selectPage(page) {
     $('formPage').hidden = page !== 'new';
     $('historyPage').hidden = page !== 'history';
+    $('usersPage').hidden = page !== 'users';
     $('tabNew').classList.toggle('selected', page === 'new');
     $('tabHistory').classList.toggle('selected', page === 'history');
+    $('tabUsers').classList.toggle('selected', page === 'users');
+    $('historyTitle').textContent = canSeeHistory() ? 'Histórico de avaliações' : 'Minhas pendências';
+  }
+
+  $('tabUsers').onclick = () => {
+    selectPage('users');
+    loadUsers();
+  };
+
+  async function loadUsers() {
+    if (!isAdmin()) return;
+    const target = $('userList');
+    $('usersStatus').textContent = 'Carregando usuários...';
+    try {
+      const snap = await getDocs(collection(db, 'users'));
+      const users = snap.docs.map(item => ({ uid: item.id, ...item.data() }))
+        .sort((a, b) => String(a.name || '').localeCompare(String(b.name || ''), 'pt-BR'));
+      target.replaceChildren(...users.map(userRow));
+      $('usersStatus').textContent = `${users.length} usuário(s). Mudanças valem no próximo login da pessoa.`;
+    } catch (err) {
+      $('usersStatus').textContent = `Não foi possível carregar os usuários: ${err.message}`;
+    }
+  }
+
+  function userRow(user) {
+    const box = document.createElement('article');
+    box.className = 'item';
+    const name = document.createElement('strong');
+    name.textContent = user.name || '(sem nome)';
+    const info = document.createElement('small');
+    const sector = user.role === 'lider' ? ` • ${user.department || 'sem setor'}` : '';
+    info.textContent = `${ROLE_LABELS[user.role] || user.role || 'sem função'}${sector} • UID ${user.uid}`;
+    box.append(name, info);
+
+    const toggle = (field, text, disabled = false) => {
+      const label = document.createElement('label');
+      label.className = 'check';
+      const input = document.createElement('input');
+      input.type = 'checkbox';
+      input.checked = user[field] === true;
+      input.disabled = disabled;
+      input.onchange = async () => {
+        input.disabled = true;
+        try {
+          await updateDoc(doc(db, 'users', user.uid), { [field]: input.checked });
+          user[field] = input.checked;
+        } catch (err) {
+          input.checked = !input.checked;
+          $('usersStatus').textContent = `Não foi possível salvar: ${err.message}`;
+        } finally { input.disabled = disabled; }
+      };
+      label.append(input, document.createTextNode(` ${text}`));
+      return label;
+    };
+    box.append(toggle('active', 'Acesso ativo', user.uid === auth.currentUser.uid));
+    if (['lider', 'marketing'].includes(user.role)) {
+      box.append(toggle('canViewHistory', 'Pode ver o histórico do setor'));
+    }
+    return box;
   }
 
   $('tabHistory').onclick = () => {
@@ -255,6 +343,7 @@ function boot() {
     }
 
     form.reset();
+    applyDepartmentLock();
     configureType();
 
     document.querySelectorAll('#criteria select').forEach(select => {
@@ -305,7 +394,7 @@ function boot() {
     e.preventDefault();
     $('formError').textContent = '';
 
-    if (!profile || !['admin', 'gestor', 'marketing'].includes(profile.role)) {
+    if (!profile || !canCreate()) {
       $('formError').textContent =
         'Entre como gestor autorizado antes de gerar o relatório.';
       return;
@@ -354,7 +443,7 @@ function boot() {
         employee: values.employee.trim(),
         employeeNameKey: normalized(values.employee),
         position: values.position.trim(),
-        department: values.department.trim(),
+        department: isLeader() ? leaderDepartment() : (values.department || '').trim(),
         type: values.type,
         questionnaireVersion: type === 'DESEMPENHO' ? null : QUESTIONNAIRE_VERSION,
         questionnaireLabels,
@@ -476,9 +565,15 @@ function boot() {
       }
 
       const base = collection(db, isMarketing() ? 'marketingAssessments' : 'assessments');
-      const source = ['gestor', 'marketing'].includes(profile.role)
-        ? query(base, where('evaluatorUid', '==', auth.currentUser.uid))
-        : base;
+      const uid = auth.currentUser.uid;
+      let source = base;
+      if (['gestor', 'marketing'].includes(profile.role)) {
+        source = query(base, where('evaluatorUid', '==', uid));
+      } else if (profile.role === 'lider') {
+        source = canSeeHistory()
+          ? query(base, where('department', '==', profile.department))
+          : query(base, where('evaluatorUid', '==', uid), where('status', 'in', PENDING_STATUSES));
+      }
 
       historyUnsubscribe = onSnapshot(
         source,
@@ -661,7 +756,7 @@ function boot() {
       }
 
       if (
-        ['admin', 'gestor'].includes(profile.role) &&
+        ['admin', 'gestor', 'rh', 'lider'].includes(profile.role) &&
         item.evaluatorUid === auth.currentUser.uid &&
         item.status === 'AGUARDANDO_GESTOR'
       ) {
@@ -682,8 +777,32 @@ function boot() {
         box.append(reviewForm(item, 'director'));
       }
 
+      if (isAdmin()) box.append(deleteButton(item));
+
       target.append(box);
     }
+  }
+
+  function deleteButton(item) {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'danger';
+    button.textContent = 'Excluir avaliação';
+    button.onclick = async () => {
+      if (!window.confirm(`Excluir definitivamente a avaliação de ${item.employee}? Esta ação não pode ser desfeita.`)) return;
+      button.disabled = true;
+      try {
+        const batch = writeBatch(db);
+        batch.delete(doc(db, 'assessments', item.id));
+        batch.delete(doc(db, 'marketingAssessments', item.id));
+        await batch.commit();
+        $('historyStatus').textContent = 'Avaliação excluída.';
+      } catch (err) {
+        $('historyStatus').textContent = `Não foi possível excluir: ${err.message}`;
+        button.disabled = false;
+      }
+    };
+    return button;
   }
 
   function itemValues(item) {
