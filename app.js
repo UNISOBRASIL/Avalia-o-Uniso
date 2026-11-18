@@ -992,7 +992,7 @@ function boot() {
       <style>
         @page { size: A4; margin: 15mm; }
         * { box-sizing: border-box; }
-        body { margin: 24px auto; max-width: 185mm; color: #183039; font: 11pt/1.42 Arial, sans-serif; }
+        body { margin: 24px auto; max-width: 185mm; color: #183039; font: 11pt/1.42 Calibri, Carlito, Arial, sans-serif; }
         .actions { background: #eef8f9; padding: 12px; margin-bottom: 18px; border-radius: 6px; }
         button { background: #176c78; color: white; border: 0; border-radius: 5px; padding: 10px 15px; cursor: pointer; }
         .head { display: flex; align-items: center; gap: 22px; border-bottom: 2px solid #79cbd0; padding-bottom: 14px; }
