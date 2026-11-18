@@ -12,7 +12,7 @@
         <label>Colaborador<input name="employee" maxlength="120" required></label><label>Cargo<input name="position" maxlength="120" required></label>
         <label>Setor<select name="department" id="department" required></select></label><label>Tipo<select name="type" id="assessmentType"><option value="DESEMPENHO">Avaliação e Desempenho</option><option value="EXPERIENCIA">Experiência (resposta do colaborador)</option><option value="PROMOCAO">Promoção (resposta do colaborador)</option><option value="PERIODICA">Avaliação periódica (resposta do colaborador)</option></select></label>
         <label>Início do período<input name="periodStart" type="date" required></label><label>Fim do período<input name="periodEnd" type="date" required></label>
-      </div><p>Gestor avaliador: <b id="evaluatorName"></b></p>
+      </div><p id="evaluatorLine">Gestor avaliador: <b id="evaluatorName"></b></p><label id="evaluatorPersonWrap" hidden>Nome de quem está avaliando<input id="evaluatorPerson" name="evaluatorPerson" maxlength="120" autocomplete="off"></label>
       <label id="employeeEmailWrap" hidden>E-mail do colaborador para resposta individual<input id="employeeEmail" name="employeeEmail" type="email" autocomplete="off" maxlength="254"></label>
       <div id="scoreSection"><h2>Critérios • 0 a 10</h2><p class="hint" id="weightHint">A nota final é ponderada pelos pesos aprovados (soma 65, normalizada para 100). Assiduidade representa 30/65 da nota.</p>
       <div id="criteria"></div></div>
@@ -52,4 +52,4 @@
       <p id="usersStatus" role="status"></p><div id="userList"></div>
     </section>
   </div>
-</main><script src="scoring.js?v=20261118-1"></script><script src="questionnaires.js?v=20261013-1"></script><script type="module" src="app.js?v=20261118-4"></script></body></html>
+</main><script src="scoring.js?v=20261118-1"></script><script src="questionnaires.js?v=20261013-1"></script><script type="module" src="app.js?v=20261118-5"></script></body></html>

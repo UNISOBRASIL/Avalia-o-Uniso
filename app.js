@@ -33,6 +33,7 @@ function boot() {
   // Líderes (setor e Marketing) avaliam só o próprio setor; o histórico depende de liberação do admin.
   const isLeader = () => ['lider', 'marketing'].includes(profile?.role);
   const canCreate = () => ['admin', 'gestor', 'rh', 'lider', 'marketing'].includes(profile?.role);
+  const sharedLogin = () => profile?.role === 'lider';
   const canSeeHistory = () => !isLeader() || profile?.canViewHistory === true;
   const leaderDepartment = () => isMarketing() ? 'Marketing' : (profile?.department || '');
   const accountName = () =>
@@ -171,6 +172,10 @@ function boot() {
       refreshCriterionWeights();
       configureType();
       $('evaluatorName').textContent = accountName();
+      // Login de setor compartilhado: quem avalia informa o próprio nome.
+      $('evaluatorLine').hidden = sharedLogin();
+      $('evaluatorPersonWrap').hidden = !sharedLogin();
+      $('evaluatorPerson').required = sharedLogin();
       $('assessmentForm').hidden = false;
 
       applyDepartmentLock();
@@ -421,6 +426,11 @@ function boot() {
       return;
     }
 
+    if (sharedLogin() && !(values.evaluatorPerson || '').trim()) {
+      $('formError').textContent = 'Informe o nome de quem está avaliando.';
+      return;
+    }
+
     if (values.periodStart > values.periodEnd) {
       $('formError').textContent =
         'O fim do período deve ser igual ou posterior ao início.';
@@ -463,7 +473,8 @@ function boot() {
           ['goal', 'action', 'owner']
             .map(key => [key, values[key]?.trim() || ''])
         ),
-        evaluator: accountName(),
+        evaluator: sharedLogin() ? (values.evaluatorPerson || '').trim() : accountName(),
+        evaluatorAccount: accountName(),
         evaluatorUid: auth.currentUser.uid,
         evaluatorRole: profile.role,
         createdAt: serverTimestamp(),
@@ -820,7 +831,8 @@ function boot() {
       ['notes', 'Observações e evidências', 2000, true],
       ['goal', 'O que desenvolver', 500, false],
       ['action', 'Ação recomendada', 800, true],
-      ['owner', 'Responsável', 120, false]
+      ['owner', 'Responsável', 120, false],
+      ...(sharedLogin() ? [['person', 'Nome de quem está registrando', 120, false]] : [])
     ];
     const inputs = {};
     for (const [key, labelText, maxLength, multiline] of fields) {
@@ -858,7 +870,7 @@ function boot() {
           notes: values.notes,
           plan: { goal: values.goal, action: values.action, owner: values.owner },
           managerUid: auth.currentUser.uid,
-          managerName: accountName(),
+          managerName: sharedLogin() ? values.person : accountName(),
           managerAt: serverTimestamp(),
           status: 'AGUARDANDO_RH',
           updatedAt: serverTimestamp()
